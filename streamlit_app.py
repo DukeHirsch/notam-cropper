@@ -3,6 +3,7 @@ from pypdf import PdfReader, PdfWriter
 from google import genai
 import io
 import os
+import datetime
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -33,24 +34,50 @@ def summarize_notam_data(text):
 
     client = genai.Client(api_key=api_key)
 
-    # Specialized Prompt for NOTAM/Flight Data
+    # 1. Get Today's Date for the AI to calculate age
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+
+    # 2. Specialized Pilot Prompt
     prompt = f"""
-    TASK: You are an Aviation Data Analyst. Process this text.
+    ROLE: You are a Senior First Officer reviewing NOTAMs for a flight.
+    TODAY'S DATE: {today_str}
 
-    GOAL: Remove administrative fluff and highlight operational risks.
+    TASK: Reorganize and format this NOTAM data into a Pilot Briefing.
 
-    INSTRUCTIONS:
-    1. FILTER: Ignore standard disclaimers, copyrights, and blank filler.
-    2. EXTRACT: Keep dates, coordinates, altitudes, and specific warnings.
-    3. FORMAT: Output as a clean, high-density bulleted list.
-    4. HIGHLIGHT: If you see words like "PROHIBITED", "DANGER", or "CLOSED", put them in **BOLD CAPS**.
+    --- MANDATORY RULES ---
+
+    1. NO DELETIONS: You must retain EVERY SINGLE NOTAM for legal compliance. Do not summarize them away.
+
+    2. GROUPING: Group all NOTAMs strictly by AIRPORT (ICAO Code).
+
+    3. SORTING ORDER (Per Airport):
+       - TOP PRIORITY: RWY (Runway) closures, work, or friction.
+       - 2ND PRIORITY: TWY (Taxiway) closures or restrictions.
+       - 3RD PRIORITY: COM (Communication) / NAV (ILS/VOR) outages.
+       - 4TH PRIORITY: All other operational info.
+       - BOTTOM PRIORITY: OBS (Obstacles), Grass cutting, Administrative, Trigger NOTAMs.
+
+    4. CALCULATE AGE:
+       - Look at the "Start Date" (Item B).
+       - Calculate days elapsed since {today_str}.
+       - Format the label as: "**[ 📅 45d ago ]**" or "**[ 🚨 NEW TODAY ]**".
+
+    5. FORMATTING (The Output):
+       - For RWY/TWY/COM: Use clear bullet points.
+       - FOR OBSTACLES (OBS) ONLY: You MUST wrap them in HTML details tags to make them collapsible. 
+         Example:
+         <details>
+         <summary>🔻 Click to view 5 Obstacle/Low-Priority NOTAMs</summary>
+         * [ 📅 300d ago ] OBS: Crane erected...
+         * [ 📅 120d ago ] OBS: Mast unlit...
+         </details>
 
     INPUT TEXT:
-    {text[:20000]} (truncated for token limits)
+    {text[:25000]} (truncated for safe token limits)
     """
 
     try:
-        # Using Gemini 2.0 Flash for speed
+        # Using Gemini 2.0 Flash for speed and large context window
         response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
         return response.text
     except Exception as e:
@@ -59,7 +86,7 @@ def summarize_notam_data(text):
 
 # --- MAIN INTERFACE ---
 st.title("✈️ NOTAM Cropper")
-st.markdown("### Upload Report -> Crop Pages -> AI Summary")
+st.markdown("### Upload Report -> Crop Pages -> AI Sort")
 
 # 1. AUTH CHECK
 if not get_api_key():
@@ -128,14 +155,14 @@ if uploaded_file:
 
         # --- TAB 2: THE BRAIN (AI SUMMARY) ---
         with tab2:
-            st.header("AI Risk Analysis")
-            st.info("This will extract text from the FIRST 10 PAGES of your selection to find critical info.")
+            st.header("Smart Pilot Sort")
+            st.info("Re-organizing: RWY > TWY > COM > OBS (Hidden)")
 
             if st.button("Analyze Document"):
-                with st.spinner("🤖 Reading..."):
+                with st.spinner("🤖 Sorting NOTAMs by Priority..."):
                     full_text = ""
-                    # Limit to first 10 pages to save wait time/tokens
-                    limit = min(10, total_pages)
+                    # Limit to first 15 pages to ensure we get the important stuff without waiting forever
+                    limit = min(15, total_pages)
 
                     for i in range(limit):
                         page_text = reader.pages[i].extract_text()
@@ -146,9 +173,12 @@ if uploaded_file:
                         st.warning("⚠️ This PDF seems to be an image scan (no selectable text). AI cannot read it.")
                     else:
                         summary = summarize_notam_data(full_text)
-                        st.subheader("Operational Summary")
-                        st.markdown(summary)
-                        st.download_button("Download Summary (.txt)", summary, file_name="summary.txt")
+
+                        st.subheader("Pilot Briefing")
+                        # unsafe_allow_html is required for the <details> tags to work
+                        st.markdown(summary, unsafe_allow_html=True)
+
+                        st.download_button("Download Briefing (.txt)", summary, file_name="pilot_briefing.txt")
 
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
