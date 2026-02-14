@@ -12,6 +12,8 @@ import datetime
 import re
 import json
 import io
+import base64
+import urllib.request
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -21,19 +23,53 @@ st.set_page_config(
 )
 
 
+# --- HELPER: FETCH GITHUB VERSION ---
+@st.cache_data(ttl=3600)  # Cache for 1 hour to prevent GitHub API rate-limiting
+def get_github_version():
+    try:
+        # Ping the public GitHub API for the latest release tag
+        url = "https://api.github.com/repos/DukeHirsch/notam-cropper/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Streamlit-App'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data.get("tag_name", "v1.0.0")
+    except Exception:
+        # Fallback if the iPad is offline or GitHub API is temporarily blocking us
+        return "v1.0.0"
+
+
+# --- HELPER: FETCH GITHUB README ---
+@st.cache_data(ttl=3600)  # Cache for 1 hour to prevent GitHub API rate-limiting
+def get_github_readme():
+    try:
+        # Fetch the raw markdown directly from the main branch
+        url = "https://raw.githubusercontent.com/DukeHirsch/notam-cropper/main/README.md"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Streamlit-App'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            return response.read().decode('utf-8')
+    except Exception:
+        return "⚠️ Could not load documentation from GitHub. Please ensure you have an active internet connection."
+
+
 # --- AUTHENTICATION HANDLER ---
 def get_api_key():
-    # Check absolute Streamlit secrets path first
-    key_path = r"C:\Users\chris\OneDrive\Desktop\NOTAM-cropper\.streamlit\secrets.toml"
-    if os.path.exists(key_path):
-        with open(key_path, "r", encoding="utf-8") as f:
+    # 1. Check Lead Engineer's absolute central config path first
+    central_key_path = r"C:\Users\chris\OneDrive\Desktop\PublicDemandBot\Config\gemini_key.txt"
+    if os.path.exists(central_key_path):
+        with open(central_key_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    # 2. Check local project Streamlit secrets path
+    local_key_path = r"C:\Users\chris\OneDrive\Desktop\NOTAM-cropper\.streamlit\secrets.toml"
+    if os.path.exists(local_key_path):
+        with open(local_key_path, "r", encoding="utf-8") as f:
             content = f.read()
             # Extract just the key value, ignoring the TOML syntax
             match = re.search(r'GEMINI_KEY\s*=\s*["\']([^"\']+)["\']', content)
             if match:
                 return match.group(1)
 
-    # Fallback to standard Streamlit secrets manager
+    # 3. Fallback to standard Streamlit Cloud secrets manager
     try:
         return st.secrets["GEMINI_KEY"]
     except:
@@ -163,7 +199,17 @@ def stamp_pdf(doc, notam_data):
 
 # --- MAIN INTERFACE ---
 st.title("✈️ NOTAM Pilot Briefing")
-st.markdown("### Upload -> AI Analyze -> Download Annotated PDF")
+
+# Fetch and display the dynamic GitHub version
+app_version = get_github_version()
+st.caption(f"**Live Build:** `{app_version}`")
+
+# Fetch and display the README in a collapsible expander
+with st.expander("📖 View Documentation & Setup Guide", expanded=False):
+    readme_text = get_github_readme()
+    st.markdown(readme_text)
+
+st.markdown("### Upload -> AI Analyze -> Send to EFB")
 
 # 1. AUTH CHECK
 if not get_api_key():
@@ -201,12 +247,24 @@ if uploaded_file:
 
                         st.success("✅ Briefing successfully annotated!")
 
-                        st.download_button(
-                            label="Download Annotated Briefing (.pdf)",
-                            data=annotated_pdf_bytes,
-                            file_name="annotated_pilot_briefing.pdf",
-                            mime="application/pdf"
-                        )
+                        # Convert PDF bytes to base64 string
+                        b64_pdf = base64.b64encode(annotated_pdf_bytes).decode('utf-8')
+
+                        # Create a custom HTML button to open the PDF in a new Safari tab
+                        pdf_display_html = f'''
+                        <a href="data:application/pdf;base64,{b64_pdf}" target="_blank" 
+                           style="display: inline-block; padding: 0.6em 1.2em; color: white; 
+                                  background-color: #FF4B4B; text-decoration: none; 
+                                  border-radius: 4px; font-weight: 600; font-family: sans-serif;
+                                  text-align: center; margin-top: 10px;">
+                            📄 Open Briefing in New Tab
+                        </a>
+                        <br><br>
+                        <p style="font-size: 0.85em; color: gray;">
+                            <i><b>iPad Tip:</b> Tap the button above, then use the iOS Share icon (square with an up arrow) to send it directly to GoodReader, ForeFlight, or your preferred EFB.</i>
+                        </p>
+                        '''
+                        st.markdown(pdf_display_html, unsafe_allow_html=True)
                     else:
                         st.error(status_msg)
 
