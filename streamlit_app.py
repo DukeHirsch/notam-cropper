@@ -1,6 +1,12 @@
+import sys
+import warnings
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
+sys.stdout.reconfigure(encoding='utf-8')
+
 import streamlit as st
 from pypdf import PdfReader
-from google import genai
+import google.generativeai as genai
 import os
 import datetime
 import re
@@ -15,6 +21,17 @@ st.set_page_config(
 
 # --- AUTHENTICATION HANDLER ---
 def get_api_key():
+    # Check absolute Streamlit secrets path first
+    key_path = r"C:\Users\chris\OneDrive\Desktop\NOTAM-cropper\.streamlit\secrets.toml"
+    if os.path.exists(key_path):
+        with open(key_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            # Extract just the key value, ignoring the TOML syntax
+            match = re.search(r'GEMINI_KEY\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                return match.group(1)
+
+    # Fallback to standard Streamlit secrets manager
     try:
         return st.secrets["GEMINI_KEY"]
     except:
@@ -70,9 +87,10 @@ def clean_ai_response(text):
 def summarize_notam_data(text):
     api_key = get_api_key()
     if not api_key:
-        return "❌ Error: API Key not found. Please set GEMINI_KEY in secrets."
+        return "❌ Error: API Key not found. Please check secrets.toml or Streamlit secrets."
 
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
 
     # --- THE PILOT PROMPT ---
@@ -95,7 +113,7 @@ def summarize_notam_data(text):
        - **OTHER** (Admin, Services, Obstacles) -> Default: CLOSED
        - **IRRELEVANT** (A380, Code F, Code Letter F) -> Default: CLOSED
 
-    3. **THE HEADER TAG (Heads-Up Display):** Format: `**NOTAM_ID** VALIDITY &nbsp;&nbsp; ` **`[ TYPE | AGE ]`**
+    3. **THE HEADER TAG (Heads-Up Display):** Format: `**NOTAM_ID** &nbsp;&nbsp; ` **`[ TYPE | AGE ]`**
        * **TYPE:** RWY, NAV, TWY, AIR, OBS, MIL, IRR (for Irrelevant).
        * **AGE:** Days elapsed since start date (Zero-padded: 003).
 
@@ -105,7 +123,7 @@ def summarize_notam_data(text):
 
     5. **CONTENT FORMAT:**
        - Summarize into 1-2 clean lines. Remove "REF AIP...", "FLW...", "WI...".
-       - DO NOT use Markdown code blocks (```). Output raw HTML text.
+       - DO NOT use Markdown code blocks. Output raw HTML text.
 
     6. **COLLAPSIBILITY (HTML):**
        - **CRITICAL** (Runway, Approach) -> `<details open>`
@@ -115,7 +133,7 @@ def summarize_notam_data(text):
     <h3>RCTP (Taipei)</h3>
     <details open> <summary><b>🚨 RUNWAY (2 Items)</b></summary>
     <ul>
-    <li><b>1A293/26</b> 10FEB-03MAR &nbsp; <b>[ RWY | 003 ]</b><br>
+    <li><b>1A293/26</b> &nbsp; <b>[ RWY | 003 ]</b><br>
     RWY 05R/23L <span style='color: red; font-weight: bold; background-color: #ffe6e6;'>CLSD</span> 0400-0430 Daily.</li>
     </ul>
     </details>
@@ -128,11 +146,11 @@ def summarize_notam_data(text):
     </details>
 
     INPUT TEXT:
-    {text[:50000]} 
+    {text} 
     """
 
     try:
-        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        response = model.generate_content(prompt)
         return clean_ai_response(response.text)
     except Exception as e:
         return f"⚠️ AI Analysis Failed: {e}"
