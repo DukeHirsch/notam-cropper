@@ -92,15 +92,17 @@ def analyze_notams(text):
        - OTHER -> OBS
        - IRRELEVANT (A380, Code F) -> IRR
 
-    2. AGE RULE: Calculate days elapsed since the valid start date. Max limit is 999.
+    2. EXCLUSION RULE (CRITICAL): DO NOT include Company NOTAMs. Completely ignore any NOTAM ID that starts with "CO" (e.g., CO11/26, CO152/22).
 
-    3. PADDING RULE (CRITICAL): Pad the age to exactly 3 characters using underscores (_).
+    3. AGE RULE: Calculate days elapsed since the valid start date. Max limit is 999.
+
+    4. PADDING RULE (CRITICAL): Pad the age to exactly 3 characters using underscores (_).
        - 5 days -> __5
        - 45 days -> _45
        - 120 days -> 120
        - 1000+ days -> 999
 
-    4. FORMAT: [ TYPE | AGE ]
+    5. FORMAT: [ TYPE | AGE ]
 
     --- OUTPUT FORMAT ---
     Return ONLY a valid JSON dictionary. No explanations, no markdown fences.
