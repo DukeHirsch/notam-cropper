@@ -5,11 +5,13 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 sys.stdout.reconfigure(encoding='utf-8')
 
 import streamlit as st
-from pypdf import PdfReader
+import fitz  # PyMuPDF
 import google.generativeai as genai
 import os
 import datetime
 import re
+import json
+import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -39,87 +41,73 @@ def get_api_key():
 
 
 # --- HELPER: FULL TEXT EXTRACTION ---
-def extract_pdf_text(reader):
+def extract_pdf_text(doc):
     """
-    Extracts text from all pages without filtering to ensure no NOTAMs are dropped.
+    Extracts text from all pages using PyMuPDF.
     """
     full_text = ""
-    total_pages = len(reader.pages)
-
+    total_pages = len(doc)
     for i in range(total_pages):
-        page_text = reader.pages[i].extract_text()
+        page_text = doc[i].get_text()
         if page_text:
             full_text += f"--- PAGE {i + 1} ---\n{page_text}\n"
-
     return full_text, total_pages
 
 
 # --- HELPER: CLEAN AI OUTPUT ---
-def clean_ai_response(text):
+def clean_json_response(text):
     """
-    Removes markdown code fences so Streamlit renders the HTML.
+    Strips markdown code fences so json.loads() doesn't crash.
     """
-    text = text.replace("```html", "").replace("```", "")
-    return text
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    return text.strip()
 
 
 # --- AI ENGINE ---
-def summarize_notam_data(text):
+def analyze_notams(text):
     api_key = get_api_key()
     if not api_key:
-        return "❌ Error: API Key not found. Please check secrets.toml or Streamlit secrets."
+        return None, "❌ Error: API Key not found. Please check secrets.toml or Streamlit secrets."
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.0-flash')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
 
-    # --- THE PILOT PROMPT ---
+    # --- THE JSON PROMPT ---
     prompt = f"""
     ROLE: You are a Senior Captain creating a legal Pilot Briefing.
     TODAY'S DATE: {today_str}
 
-    TASK: Reformat the raw NOTAM text into a structured, categorized, and collapsible HTML view.
+    TASK: Analyze the raw NOTAM text and return a STRICT JSON DICTIONARY mapping each NOTAM ID to its classification tag.
 
-    --- DISPLAY RULES (STRICT) ---
-    1. **GROUPING:** Group NOTAMs strictly by **STATION/AIRPORT** (e.g., RCTP, VECF, EDDM).
+    --- RULES ---
+    1. CATEGORIES (Map to these exact 3-letter codes):
+       - RUNWAY -> RWY
+       - APPROACH -> NAV
+       - TAXI/APRON -> TWY
+       - AIRSPACE -> AIR
+       - OTHER -> OBS
+       - IRRELEVANT (A380, Code F) -> IRR
 
-    2. **CATEGORIES & SORTING:** Inside each station, group NOTAMs into these specific types. 
-       **CRITICAL RULE:** Any NOTAM mentioning "A380" or "Code Letter F" MUST go to the "IRRELEVANT" group.
+    2. AGE RULE: Calculate days elapsed since the valid start date. Max limit is 999.
 
-       - **RUNWAY** (Closures, Friction, WIP) -> Default: OPEN
-       - **APPROACH** (ILS, VOR, PAPI, Lights) -> Default: OPEN
-       - **TAXI/APRON** (Closures, Pushback) -> Default: CLOSED
-       - **AIRSPACE** (FIR Restrictions, Military Exercises, Danger Areas) -> Default: CLOSED
-       - **OTHER** (Admin, Services, Obstacles) -> Default: CLOSED
-       - **IRRELEVANT** (A380, Code F, Code Letter F) -> Default: CLOSED
+    3. PADDING RULE (CRITICAL): Pad the age to exactly 3 characters using underscores (_).
+       - 5 days -> __5
+       - 45 days -> _45
+       - 120 days -> 120
+       - 1000+ days -> 999
 
-    3. **THE HEADER TAG (Heads-Up Display):** Format: `**NOTAM_ID** &nbsp;&nbsp; ` **`[ TYPE | AGE ]`**
-       * **TYPE:** RWY, NAV, TWY, AIR, OBS, MIL, IRR (for Irrelevant).
-       * **AGE:** Days elapsed since start date (Zero-padded: 003).
+    4. FORMAT: [ TYPE | AGE ]
 
-    4. **CONTENT FORMAT:**
-       - Summarize into 1-2 clean lines. Remove "REF AIP...", "FLW...", "WI...".
-       - DO NOT use Markdown code blocks. Output raw HTML text.
-
-    5. **COLLAPSIBILITY (HTML):**
-       - **CRITICAL** (Runway, Approach) -> `<details open>`
-       - **NON-CRITICAL** (Airspace, Taxi, Irrelevant) -> `<details>` (Closed)
-
-    --- OUTPUT TEMPLATE ---
-    <h3>RCTP (Taipei)</h3>
-    <details open> <summary><b>🚨 RUNWAY (2 Items)</b></summary>
-    <ul>
-    <li><b>1A293/26</b> &nbsp; <b>[ RWY | 003 ]</b><br>
-    RWY 05R/23L CLSD 0400-0430 Daily.</li>
-    </ul>
-    </details>
-
-    <details> <summary><b>📵 IRRELEVANT (1 Item)</b></summary>
-    <ul>
-    <li><b>1A206/26</b> &nbsp; <b>[ IRR | 017 ]</b><br>
-    Code Letter F restrictions.</li>
-    </ul>
-    </details>
+    --- OUTPUT FORMAT ---
+    Return ONLY a valid JSON dictionary. No explanations, no markdown fences.
+    {{
+        "1A293/26": "[ RWY | __3 ]",
+        "1A206/26": "[ IRR | _17 ]"
+    }}
 
     INPUT TEXT:
     {text} 
@@ -127,14 +115,41 @@ def summarize_notam_data(text):
 
     try:
         response = model.generate_content(prompt)
-        return clean_ai_response(response.text)
+        cleaned_json = clean_json_response(response.text)
+        return json.loads(cleaned_json), "Success"
+    except json.JSONDecodeError:
+        return None, "⚠️ AI did not return a valid JSON format."
     except Exception as e:
-        return f"⚠️ AI Analysis Failed: {e}"
+        return None, f"⚠️ AI Analysis Failed: {e}"
+
+
+# --- PDF ANNOTATION ENGINE ---
+def stamp_pdf(doc, notam_data):
+    """
+    Searches the PDF for NOTAM IDs and stamps the AI tag on the right margin.
+    """
+    for page in doc:
+        for notam_id, tag in notam_data.items():
+            # Find the exact coordinates of the NOTAM ID on the page
+            text_instances = page.search_for(notam_id)
+            for inst in text_instances:
+                # Calculate the 75-character mark equivalent (approx 115 points from the right edge)
+                # Align the Y coordinate to the baseline of the NOTAM ID text
+                x_pos = page.rect.width - 115
+                y_pos = inst.y1 - 1
+
+                # Stamp the tag in bold courier
+                page.insert_text((x_pos, y_pos), tag, fontname="courier-bold", fontsize=10, color=(0, 0, 0))
+
+    # Save to a bytes buffer for Streamlit download
+    out_pdf = io.BytesIO()
+    doc.save(out_pdf)
+    return out_pdf.getvalue()
 
 
 # --- MAIN INTERFACE ---
 st.title("✈️ NOTAM Pilot Briefing")
-st.markdown("### Upload -> AI Sort -> Fly")
+st.markdown("### Upload -> AI Analyze -> Download Annotated PDF")
 
 # 1. AUTH CHECK
 if not get_api_key():
@@ -143,35 +158,43 @@ if not get_api_key():
     st.stop()
 
 # 2. FILE UPLOADER
-uploaded_file = st.file_uploader("Drop your PDF here", type="pdf")
+uploaded_file = st.file_uploader("Drop your LIDO PDF here", type="pdf")
 
 if uploaded_file:
     try:
-        reader = PdfReader(uploaded_file)
-        total_pages = len(reader.pages)
+        # Load directly into PyMuPDF
+        pdf_bytes = uploaded_file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+        total_pages = len(doc)
         st.success(f"Loaded **{uploaded_file.name}** ({total_pages} pages)")
 
-        if st.button("Generate Briefing", type="primary"):
-            with st.spinner("🤖 Scanning pages & sorting data..."):
-                # Run full extraction
-                extracted_text, page_count = extract_pdf_text(reader)
+        if st.button("Generate Annotated PDF", type="primary"):
+            with st.spinner("🤖 Extracting text & having AI analyze NOTAMs..."):
+                extracted_text, page_count = extract_pdf_text(doc)
 
                 if len(extracted_text) < 50:
                     st.warning("⚠️ No readable text found. Is this a scanned image?")
                 else:
-                    st.info(f"✅ Processed all {page_count} pages.")
+                    st.info(f"✅ Processed all {page_count} pages. Generating JSON tags...")
 
-                    summary = summarize_notam_data(extracted_text)
+                    # Run AI JSON mapping
+                    notam_dict, status_msg = analyze_notams(extracted_text)
 
-                    st.subheader("Pilot Briefing")
-                    st.markdown(summary, unsafe_allow_html=True)
+                    if notam_dict:
+                        with st.spinner("📑 Stamping tags onto the PDF..."):
+                            annotated_pdf_bytes = stamp_pdf(doc, notam_dict)
 
-                    st.download_button(
-                        label="Download Briefing (.html)",
-                        data=summary,
-                        file_name="pilot_briefing.html",
-                        mime="text/html"
-                    )
+                        st.success("✅ Briefing successfully annotated!")
+
+                        st.download_button(
+                            label="Download Annotated Briefing (.pdf)",
+                            data=annotated_pdf_bytes,
+                            file_name="annotated_pilot_briefing.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        st.error(status_msg)
 
     except Exception as e:
-        st.error(f"Error reading PDF: {e}")
+        st.error(f"Error processing PDF: {e}")
