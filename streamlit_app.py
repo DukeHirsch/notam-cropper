@@ -127,19 +127,31 @@ def analyze_notams(text):
 def stamp_pdf(doc, notam_data):
     """
     Searches the PDF for NOTAM IDs and stamps the AI tag on the right margin.
+    Guarantees only one stamp per NOTAM to prevent double-stamping.
     """
+    stamped_notams = set()
+
     for page in doc:
         for notam_id, tag in notam_data.items():
+            if notam_id in stamped_notams:
+                continue
+
             # Find the exact coordinates of the NOTAM ID on the page
             text_instances = page.search_for(notam_id)
             for inst in text_instances:
-                # Calculate the X position (shifted 2 chars left per Lead's request)
-                # Align the Y coordinate to the baseline of the NOTAM ID text
-                x_pos = page.rect.width - 130
-                y_pos = inst.y1 - 1
+                # Left margin check: ensures we only stamp the actual header line,
+                # not a reference to the NOTAM buried mid-sentence.
+                if inst.x0 < 100:
+                    # Calculate the X position (shifted 2 chars left per Lead's request)
+                    # Align the Y coordinate to the baseline of the NOTAM ID text
+                    x_pos = page.rect.width - 130
+                    y_pos = inst.y1 - 1
 
-                # Stamp the tag in bold courier
-                page.insert_text((x_pos, y_pos), tag, fontname="courier-bold", fontsize=10, color=(0, 0, 0))
+                    # Stamp the tag in bold courier
+                    page.insert_text((x_pos, y_pos), tag, fontname="courier-bold", fontsize=10, color=(0, 0, 0))
+
+                    stamped_notams.add(notam_id)
+                    break  # Stop checking this NOTAM ID on this page to prevent duplicates
 
     # Save to a bytes buffer for Streamlit download
     out_pdf = io.BytesIO()
