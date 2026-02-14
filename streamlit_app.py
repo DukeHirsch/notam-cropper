@@ -133,9 +133,9 @@ def stamp_pdf(doc, notam_data):
             # Find the exact coordinates of the NOTAM ID on the page
             text_instances = page.search_for(notam_id)
             for inst in text_instances:
-                # Calculate the 75-character mark equivalent (approx 115 points from the right edge)
+                # Calculate the X position (shifted 2 chars left per Lead's request)
                 # Align the Y coordinate to the baseline of the NOTAM ID text
-                x_pos = page.rect.width - 115
+                x_pos = page.rect.width - 130
                 y_pos = inst.y1 - 1
 
                 # Stamp the tag in bold courier
