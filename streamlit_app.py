@@ -247,33 +247,22 @@ if uploaded_file:
 
                         st.success("✅ Briefing successfully annotated!")
 
-                        # 1. Convert to Base64
-                        b64_pdf = base64.b64encode(annotated_pdf_bytes).decode('utf-8')
-
-                        # 2. JavaScript Blob workaround to bypass Safari restrictions
-                        js_code = (
-                            f"event.preventDefault();"
-                            f"var b64='{b64_pdf}';"
-                            f"var bin=atob(b64);"
-                            f"var arr=new Uint8Array(bin.length);"
-                            f"for(var i=0;i<bin.length;i++){{arr[i]=bin.charCodeAt(i);}}"
-                            f"var blob=new Blob([arr],{{type:'application/pdf'}});"
-                            f"window.open(URL.createObjectURL(blob),'_blank');"
+                        # 1. Provide the native download button AT THE TOP for easy EFB export
+                        st.download_button(
+                            label="📤 Download to Send to ForeFlight / GoodReader",
+                            data=annotated_pdf_bytes,
+                            file_name=f"Annotated_{uploaded_file.name}",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
                         )
 
-                        # 3. Inject Button
+                        # 2. Convert to Base64 for the iframe embed
+                        b64_pdf = base64.b64encode(annotated_pdf_bytes).decode('utf-8')
+
+                        # 3. Embed the PDF directly on the page BELOW the button
                         pdf_display_html = f'''
-                        <a href="#" onclick="{js_code}" 
-                           style="display: inline-block; padding: 0.6em 1.2em; color: white; 
-                                  background-color: #FF4B4B; text-decoration: none; 
-                                  border-radius: 4px; font-weight: 600; font-family: sans-serif;
-                                  text-align: center; margin-top: 10px;">
-                            📄 Open Briefing in New Tab
-                        </a>
-                        <br><br>
-                        <p style="font-size: 0.85em; color: gray;">
-                            <i><b>iPad Tip:</b> Tap the button above to view the PDF. Use the iOS Share icon (square with an up arrow) to send it directly to GoodReader, ForeFlight, or your preferred EFB.</i>
-                        </p>
+                        <iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800" type="application/pdf" style="border: 1px solid #ccc; border-radius: 5px; margin-top: 10px;"></iframe>
                         '''
                         st.markdown(pdf_display_html, unsafe_allow_html=True)
                     else:
