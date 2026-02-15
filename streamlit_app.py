@@ -247,12 +247,23 @@ if uploaded_file:
 
                         st.success("✅ Briefing successfully annotated!")
 
-                        # Convert PDF bytes to base64 string
+                        # 1. Convert to Base64
                         b64_pdf = base64.b64encode(annotated_pdf_bytes).decode('utf-8')
 
-                        # Create a custom HTML button to open the PDF in a new Safari tab
+                        # 2. JavaScript Blob workaround to bypass Safari restrictions
+                        js_code = (
+                            f"event.preventDefault();"
+                            f"var b64='{b64_pdf}';"
+                            f"var bin=atob(b64);"
+                            f"var arr=new Uint8Array(bin.length);"
+                            f"for(var i=0;i<bin.length;i++){{arr[i]=bin.charCodeAt(i);}}"
+                            f"var blob=new Blob([arr],{{type:'application/pdf'}});"
+                            f"window.open(URL.createObjectURL(blob),'_blank');"
+                        )
+
+                        # 3. Inject Button
                         pdf_display_html = f'''
-                        <a href="data:application/pdf;base64,{b64_pdf}" target="_blank" 
+                        <a href="#" onclick="{js_code}" 
                            style="display: inline-block; padding: 0.6em 1.2em; color: white; 
                                   background-color: #FF4B4B; text-decoration: none; 
                                   border-radius: 4px; font-weight: 600; font-family: sans-serif;
@@ -261,7 +272,7 @@ if uploaded_file:
                         </a>
                         <br><br>
                         <p style="font-size: 0.85em; color: gray;">
-                            <i><b>iPad Tip:</b> Tap the button above, then use the iOS Share icon (square with an up arrow) to send it directly to GoodReader, ForeFlight, or your preferred EFB.</i>
+                            <i><b>iPad Tip:</b> Tap the button above to view the PDF. Use the iOS Share icon (square with an up arrow) to send it directly to GoodReader, ForeFlight, or your preferred EFB.</i>
                         </p>
                         '''
                         st.markdown(pdf_display_html, unsafe_allow_html=True)
