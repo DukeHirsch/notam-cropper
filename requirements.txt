@@ -1,6 +1,5 @@
 streamlit
-google-generativeai
-pymupdf
+st-gsheets-connection
+PyMuPDF
 playwright
-playwright-stealth==1.0.6
-setuptools==69.5.1
+pandas
