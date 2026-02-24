@@ -554,12 +554,15 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
         elif "AIRPORT" in last_boundary or "AERODROME" in last_boundary:
             fallback_tag = "TWY"  # Base assumption
         elif "AIP SUPPLEMENT" in last_boundary:
-            fallback_tag = "MISC" # Base assumption
+            fallback_tag = "MISC"  # Base assumption
 
         # 5B. Keyword Overrides (Strict Order of Operations)
-        if any(kw in raw_notam_text for kw in ['ILS', 'LOC', 'GLIDE', 'GP', 'VOR', 'DVOR', 'DME', 'NDB', 'TACAN', 'RNAV', 'GNSS', 'RNP', 'PAPI', 'VASI', 'APPROACH']):
+        if any(kw in raw_notam_text for kw in
+               ['ILS', 'LOC', 'GLIDE', 'GP', 'VOR', 'DVOR', 'DME', 'NDB', 'TACAN', 'RNAV', 'GNSS', 'RNP', 'PAPI',
+                'VASI', 'APPROACH']):
             fallback_tag = "NAV"
-        elif any(kw in raw_notam_text for kw in ['CRANE', 'OBST', 'OBSTACLE', 'ERECTED', 'RIG ', 'MAST', 'TOWER', 'WINDMILL']):
+        elif any(kw in raw_notam_text for kw in
+                 ['CRANE', 'OBST', 'OBSTACLE', 'ERECTED', 'RIG ', 'MAST', 'TOWER', 'WINDMILL']):
             fallback_tag = "OBS"
         elif any(kw in raw_notam_text for kw in ['APRON', 'APN', 'STAND', 'GATE', 'TAXILANE', 'PARKING']):
             fallback_tag = "APN"
@@ -796,16 +799,20 @@ if uploaded_file:
                         final_pdf_bytes = create_monospaced_pdf(processed_text, flight_info_str)
 
                     st.success("✅ Briefing successfully filtered and reflowed!")
-                    st.download_button(
-                        label="📤 Download Cleaned Briefing",
-                        data=final_pdf_bytes,
-                        file_name=f"Filtered_{uploaded_file.name}",
-                        mime="application/pdf",
-                        type="primary",
-                        use_container_width=True
-                    )
 
                     b64_pdf = base64.b64encode(final_pdf_bytes).decode('utf-8')
+
+                    # iPad Safe Download Button (Opens in New Tab)
+                    download_html = f'''
+                    <a href="data:application/pdf;base64,{b64_pdf}" download="Filtered_{uploaded_file.name}" target="_blank" style="display: block; width: 100%; text-align: center; padding: 10px; background-color: #FF4B4B; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 10px;">
+                        📤 Open / Download Cleaned Briefing (New Tab)
+                    </a>
+                    '''
+                    st.markdown(download_html, unsafe_allow_html=True)
+
+                    if st.button("🔄 Start Over / Clear", use_container_width=True):
+                        st.rerun()
+
                     pdf_display_html = f'''
                     <iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800" type="application/pdf" style="border: 1px solid #ccc; border-radius: 5px; margin-top: 10px;"></iframe>
                     '''
