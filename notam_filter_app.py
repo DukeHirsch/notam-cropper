@@ -234,17 +234,22 @@ def classify_by_icao_standard(q_code_4_letters):
 
     rwy_subjects = {'MR', 'MT', 'MW', 'MD'}
     twy_subjects = {'MX', 'MY'}
+    apn_subjects = {'MN', 'MP'}
     nav_subjects = {'IC', 'IG', 'IL', 'ID', 'IS', 'IT', 'IU', 'IW', 'IX', 'IY', 'IZ',
                     'NA', 'NB', 'NC', 'ND', 'NE', 'NF', 'NL', 'NM', 'NN', 'NO', 'NT', 'NV',
                     'PA', 'PD', 'PE', 'PF', 'PI', 'PK', 'PL', 'PM', 'PN', 'PO', 'PR', 'PT', 'PU', 'PX', 'PZ',
                     'CA', 'CS', 'CB', 'CC', 'CD', 'CE', 'CG', 'CL', 'CM', 'CP', 'CR', 'CT'}
     obs_subjects = {'OB', 'OL', 'OA'}
+    lgt_subjects = {'LA', 'LB', 'LC', 'LD', 'LE', 'LF', 'LH', 'LI', 'LJ', 'LK', 'LL', 'LM', 'LP', 'LR', 'LS', 'LT',
+                    'LU', 'LV', 'LW', 'LX', 'LY', 'LZ'}
     air_subjects = {'RA', 'RD', 'RM', 'RO', 'RP', 'RT', 'WA', 'WE', 'WM', 'WP', 'WR', 'WS', 'WT', 'WU', 'WV', 'WZ'}
 
     if subject in rwy_subjects: return "RWY"
     if subject in twy_subjects: return "TWY"
+    if subject in apn_subjects: return "APN"
     if subject in nav_subjects: return "NAV"
     if subject in obs_subjects: return "OBS"
+    if subject in lgt_subjects: return "LGT"
     if subject in air_subjects: return "AIR"
 
     return "MISC"
@@ -362,11 +367,6 @@ def fetch_bulk_faa_data(icao_codes_list, ui_status):
                                     # End of available pages
                                     if len(notam_list) < 30:
                                         break
-                            else:
-                                ui_status.warning(f"⚠️ HTTP Error: {response.status} on {current_icaos}")
-                                chunk_aborted = True
-                                break
-
                         except Exception as network_error:
                             # Catches ECONNRESET, Timeouts, and hard Playwright crashes
                             ui_status.warning(f"⚠️ WAF bite or network failure on {current_icaos}: {network_error}")
@@ -538,7 +538,43 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             tags_for_pdf[notam_id] = f"[{type_tag.ljust(4)} | {age_str.rjust(4)}]"
             continue
 
-        # PASS 5: The Blind-Spot
+        # PASS 5: The Hybrid Fallback (LIDO Headers + Keyword Overrides)
+        body_start = match.end()
+        next_match = re.search(r'^\s*[A-Z0-9]{2,8}/[0-9]{2}\s+VALID:', full_text[body_start:], re.MULTILINE)
+        body_end = body_start + next_match.start() if next_match else len(full_text)
+        raw_notam_text = full_text[body_start:body_end].upper()
+
+        fallback_tag = "UNKN"
+
+        # 5A. Base Assignment from LIDO Header
+        if "APPROACH" in last_boundary or "SID" in last_boundary or "STAR" in last_boundary:
+            fallback_tag = "NAV"
+        elif "RUNWAY" in last_boundary:
+            fallback_tag = "RWY"
+        elif "AIRPORT" in last_boundary or "AERODROME" in last_boundary:
+            fallback_tag = "TWY"  # Base assumption
+        elif "AIP SUPPLEMENT" in last_boundary:
+            fallback_tag = "MISC" # Base assumption
+
+        # 5B. Keyword Overrides (Strict Order of Operations)
+        if any(kw in raw_notam_text for kw in ['ILS', 'LOC', 'GLIDE', 'GP', 'VOR', 'DVOR', 'DME', 'NDB', 'TACAN', 'RNAV', 'GNSS', 'RNP', 'PAPI', 'VASI', 'APPROACH']):
+            fallback_tag = "NAV"
+        elif any(kw in raw_notam_text for kw in ['CRANE', 'OBST', 'OBSTACLE', 'ERECTED', 'RIG ', 'MAST', 'TOWER', 'WINDMILL']):
+            fallback_tag = "OBS"
+        elif any(kw in raw_notam_text for kw in ['APRON', 'APN', 'STAND', 'GATE', 'TAXILANE', 'PARKING']):
+            fallback_tag = "APN"
+        elif any(kw in raw_notam_text for kw in ['TWY', 'TAXIWAY']):
+            fallback_tag = "TWY"
+        elif any(kw in raw_notam_text for kw in ['LIGHT', 'LGT', 'LIGHTING']):
+            fallback_tag = "LGT"
+        elif any(kw in raw_notam_text for kw in ['CTR', 'TMA', 'UAS', 'DRONE', 'AIRSPACE', 'RESTRICTED AREA']):
+            fallback_tag = "AIR"
+
+        if fallback_tag != "UNKN":
+            new_known[notam_id] = (fallback_tag, icao_code)
+            tags_for_pdf[notam_id] = f"[{fallback_tag.ljust(4)} | {age_str.rjust(4)}]"
+            continue
+
         tags_for_pdf[notam_id] = f"[UNKN | {age_str.rjust(4)}]"
         unknown_notams_to_log[notam_id] = icao_code
 
