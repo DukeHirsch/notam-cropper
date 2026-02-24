@@ -783,6 +783,8 @@ if uploaded_file:
             full_text += page.get_text() + "\n"
 
         if st.button("Apply Filters & Generate Clean PDF", type="primary"):
+            final_pdf_bytes = None
+
             # REPLACED SPINNER WITH EXPANDABLE STATUS CONTAINER
             with st.status("🤖 Booting Engine & querying FAA...", expanded=True) as status_ui:
                 # Restored the new_known dictionary push so your cache builds automatically
@@ -790,7 +792,6 @@ if uploaded_file:
                                                                      unknown_cache_set, false_positives_db, status_ui)
 
                 if tags_for_pdf is not None:
-                    status_ui.update(label="✅ FAA Fetch & Tagging Complete!", state="complete", expanded=False)
                     save_new_known_notams(new_known)
 
                     with st.spinner("✂️ Cropping blacklist and reflowing text..."):
@@ -798,28 +799,32 @@ if uploaded_file:
                                                                                       tags_for_pdf)
                         final_pdf_bytes = create_monospaced_pdf(processed_text, flight_info_str)
 
-                    st.success("✅ Briefing successfully filtered and reflowed!")
-
-                    b64_pdf = base64.b64encode(final_pdf_bytes).decode('utf-8')
-
-                    # iPad Safe Download Button (Opens in New Tab)
-                    download_html = f'''
-                    <a href="data:application/pdf;base64,{b64_pdf}" download="Filtered_{uploaded_file.name}" target="_blank" style="display: block; width: 100%; text-align: center; padding: 10px; background-color: #FF4B4B; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 10px;">
-                        📤 Open / Download Cleaned Briefing (New Tab)
-                    </a>
-                    '''
-                    st.markdown(download_html, unsafe_allow_html=True)
-
-                    if st.button("🔄 Start Over / Clear", use_container_width=True):
-                        st.rerun()
-
-                    pdf_display_html = f'''
-                    <iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800" type="application/pdf" style="border: 1px solid #ccc; border-radius: 5px; margin-top: 10px;"></iframe>
-                    '''
-                    st.markdown(pdf_display_html, unsafe_allow_html=True)
+                    status_ui.update(label="✅ FAA Fetch & Tagging Complete!", state="complete", expanded=False)
                 else:
                     status_ui.update(label="⚠️ Engine Failed", state="error")
                     st.error(status_msg)
+
+            # --- RENDER RESULTS OUTSIDE THE STATUS CONTAINER ---
+            if final_pdf_bytes:
+                st.success("✅ Briefing successfully filtered and reflowed!")
+
+                b64_pdf = base64.b64encode(final_pdf_bytes).decode('utf-8')
+
+                # iPad Safe Download Button (Opens in New Tab)
+                download_html = f'''
+                <a href="data:application/pdf;base64,{b64_pdf}" download="Filtered_{uploaded_file.name}" target="_blank" style="display: block; width: 100%; text-align: center; padding: 10px; background-color: #FF4B4B; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 10px;">
+                    📤 Open / Download Cleaned Briefing (New Tab)
+                </a>
+                '''
+                st.markdown(download_html, unsafe_allow_html=True)
+
+                if st.button("🔄 Start Over / Clear", use_container_width=True):
+                    st.rerun()
+
+                pdf_display_html = f'''
+                <iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800" type="application/pdf" style="border: 1px solid #ccc; border-radius: 5px; margin-top: 10px;"></iframe>
+                '''
+                st.markdown(pdf_display_html, unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Error processing document: {e}")
