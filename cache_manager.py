@@ -56,11 +56,9 @@ def manage_cache():
 
         print(f"[STATUS] Found {len(completed_df)} completed entries to transfer. {len(pending_df)} remaining pending.")
 
-        # 3. Format New Entries for Known_NOTAMs
-        # Strip brackets just in case you manually typed "[ RWY ]" instead of "RWY"
-        completed_df["Tag"] = completed_df["Type"].str.replace("[", "", regex=False).str.replace("]", "",
-                                                                                                 regex=False).str.strip()
-        new_entries = completed_df[["ID", "Tag", "Location"]].copy()
+        # 3. Format New Entries for Known_NOTAMs (ID, Location, Type, Timestamp)
+        completed_df["Type"] = completed_df["Type"].str.replace("[", "", regex=False).str.replace("]", "", regex=False).str.strip()
+        new_entries = completed_df[["ID", "Location", "Type"]].copy()
 
         today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         new_entries["Timestamp"] = today_str
