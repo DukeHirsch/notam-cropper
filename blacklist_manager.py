@@ -135,7 +135,7 @@ def maintain_blacklist():
 
             if keep_row:
                 valid_rows.append(
-                    [row.get("ID", ""), row.get("Location", ""), row.get("Type", ""), row.get("Timestamp", "")])
+                    [row.get("ID", ""), row.get("Location", ""), row.get("Type", row.get("Tag", "")), row.get("Timestamp", "")])
 
         if pruned_count > 0:
             print(f"[STATUS] Pruned {pruned_count} expired NOTAMs (>2 years old).")

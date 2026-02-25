@@ -60,8 +60,8 @@ def load_blacklist():
             notam_id = str(row.get("ID", "")).strip()
             if notam_id and notam_id.lower() != "nan":
                 loc = str(row.get("Location", "UNK")).strip()
-                tag = str(row.get("Type", "")).strip()
-                blacklist_dict[notam_id] = (notam_id, loc, tag)
+                tag = str(row.get("Type", row.get("Tag", ""))).strip()
+                blacklist_dict[(notam_id, loc)] = (notam_id, loc, tag)
     except Exception as e:
         st.error(f"⚠️ Failed to load Blacklist from cloud: {e}")
 
@@ -78,9 +78,10 @@ def load_and_prune_known_notams():
 
         for _, row in df.iterrows():
             notam_id = str(row.get("ID", "")).strip()
-            tag = str(row.get("Tag", "")).strip()
+            tag = str(row.get("Type", row.get("Tag", ""))).strip()
+            loc = str(row.get("Location", "")).strip()
             if notam_id and notam_id.lower() != "nan" and tag and tag.lower() != "nan":
-                known_dict[notam_id] = tag
+                known_dict[(notam_id, loc)] = tag
     except Exception as e:
         st.error(f"⚠️ Failed to load Known NOTAMs from cloud: {e}")
 
@@ -95,8 +96,11 @@ def load_unknown_notams_cache():
         conn = st.connection("gsheets", type=GSheetsConnection)
         df = conn.read(spreadsheet=SHEET_URL, worksheet="Unknown_NOTAMs", ttl=600)
 
-        if not df.empty and "ID" in df.columns:
-            unknown_set = set(df["ID"].dropna().astype(str).str.strip().tolist())
+        for _, row in df.iterrows():
+            notam_id = str(row.get("ID", "")).strip()
+            loc = str(row.get("Location", "")).strip()
+            if notam_id and notam_id.lower() != "nan":
+                unknown_set.add((notam_id, loc))
     except Exception as e:
         st.warning(f"⚠️ Failed to load Unknown NOTAMs cache from cloud: {e}")
 
@@ -156,8 +160,8 @@ def save_new_known_notams(new_entries_dict):
         today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
         new_rows = []
-        for notam_id, (tag, loc) in new_entries_dict.items():
-            new_rows.append({"ID": notam_id, "Tag": tag, "Location": loc, "Timestamp": today_str})
+        for (notam_id, loc), tag in new_entries_dict.items():
+            new_rows.append({"ID": notam_id, "Location": loc, "Type": tag, "Timestamp": today_str})
 
         new_df = pd.DataFrame(new_rows)
         updated_df = pd.concat([df_known, new_df], ignore_index=True)
@@ -175,13 +179,14 @@ def log_unknown_notams(unknown_dict):
         conn = st.connection("gsheets", type=GSheetsConnection)
         df_unknown = conn.read(spreadsheet=SHEET_URL, worksheet="Unknown_NOTAMs", ttl=0)
 
-        existing_ids = set()
-        if not df_unknown.empty and "ID" in df_unknown.columns:
-            existing_ids = set(df_unknown["ID"].dropna().astype(str).str.strip().tolist())
+        existing_tuples = set()
+        if not df_unknown.empty and "ID" in df_unknown.columns and "Location" in df_unknown.columns:
+            for _, row in df_unknown.iterrows():
+                existing_tuples.add((str(row.get("ID", "")).strip(), str(row.get("Location", "")).strip()))
 
         new_rows = []
-        for notam_id, location in unknown_dict.items():
-            if notam_id not in existing_ids:
+        for (notam_id, location) in unknown_dict.keys():
+            if (notam_id, location) not in existing_tuples:
                 new_rows.append({"ID": notam_id, "Location": location, "Type": ""})
 
         if new_rows:
@@ -432,15 +437,19 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             continue  # FIR/Enroute zone, skip FAA fetch entirely
 
         preceding_text = full_text[:match.start()]
+
+        loc_matches_local = [m for m in re.findall(airport_regex, preceding_text) if m not in fp_set]
+        icao_code = loc_matches_local[-1] if loc_matches_local else "UNK"
+
         boundaries = re.findall(r'(?:\+{4,}[^\n]+\+{4,}|={2,}[^\n]+={2,}|^-{4,}$)', preceding_text, re.MULTILINE)
         last_boundary = boundaries[-1].upper() if boundaries else ""
 
         is_company = "COMPANY" in last_boundary or notam_id.startswith("CO")
         is_u_type = notam_id.startswith("U")
 
-        if notam_id in blacklist_dict or is_company or is_u_type:
+        if (notam_id, icao_code) in blacklist_dict or (notam_id, "UNK") in blacklist_dict or is_company or is_u_type:
             continue
-        if notam_id in known_dict or notam_id in unknown_cache:
+        if (notam_id, icao_code) in known_dict or (notam_id, icao_code) in unknown_cache:
             continue
 
         pending_notams.add(notam_id)
@@ -461,15 +470,14 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
         notam_id = match.group(1)
         valid_str = match.group(2)
 
-        if notam_id in blacklist_dict:
-            continue
-
         age_int, age_str = get_age_data(valid_str)
-
         preceding_text = full_text[:match.start()]
 
         loc_matches_local = [m for m in re.findall(airport_regex, preceding_text) if m not in fp_set]
         icao_code = loc_matches_local[-1] if loc_matches_local else "UNK"
+
+        if (notam_id, icao_code) in blacklist_dict or (notam_id, "UNK") in blacklist_dict:
+            continue
 
         boundaries = re.findall(r'(?:\+{4,}[^\n]+\+{4,}|={2,}[^\n]+={2,}|^-{4,}$)', preceding_text, re.MULTILINE)
         last_boundary = boundaries[-1].upper() if boundaries else ""
@@ -481,17 +489,17 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
         # COMPANY OR FIR ZONE NOTAMS: Only tag if < 8 days old, else leave blank
         if is_company or is_u_type or is_fir_or_enroute:
             if age_int < 8:
-                tags_for_pdf[notam_id] = "[NEW THIS WEEK]"
+                tags_for_pdf[(notam_id, icao_code)] = "[NEW THIS WEEK]"
             continue
 
         # --- REGULAR AIRPORT NOTAMS (Constant 13-character locked width formatting) ---
-        if notam_id in known_dict:
-            type_tag = known_dict[notam_id]
-            tags_for_pdf[notam_id] = f"[{type_tag.ljust(4)} | {age_str.rjust(4)}]"
+        if (notam_id, icao_code) in known_dict:
+            type_tag = known_dict[(notam_id, icao_code)]
+            tags_for_pdf[(notam_id, icao_code)] = f"[{type_tag.ljust(4)} | {age_str.rjust(4)}]"
             continue
 
-        if notam_id in unknown_cache:
-            tags_for_pdf[notam_id] = f"[UNKN | {age_str.rjust(4)}]"
+        if (notam_id, icao_code) in unknown_cache:
+            tags_for_pdf[(notam_id, icao_code)] = f"[UNKN | {age_str.rjust(4)}]"
             continue
 
         # PASS 4: The FAA Engine using universal hash & Dynamic Fingerprint Fallback
@@ -534,8 +542,8 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
                     break
 
         if match_found:
-            new_known[notam_id] = (type_tag, icao_code)
-            tags_for_pdf[notam_id] = f"[{type_tag.ljust(4)} | {age_str.rjust(4)}]"
+            new_known[(notam_id, icao_code)] = type_tag
+            tags_for_pdf[(notam_id, icao_code)] = f"[{type_tag.ljust(4)} | {age_str.rjust(4)}]"
             continue
 
         # PASS 5: The Hybrid Fallback (LIDO Headers + Keyword Overrides)
@@ -574,12 +582,12 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             fallback_tag = "AIR"
 
         if fallback_tag != "UNKN":
-            new_known[notam_id] = (fallback_tag, icao_code)
-            tags_for_pdf[notam_id] = f"[{fallback_tag.ljust(4)} | {age_str.rjust(4)}]"
+            new_known[(notam_id, icao_code)] = fallback_tag
+            tags_for_pdf[(notam_id, icao_code)] = f"[{fallback_tag.ljust(4)} | {age_str.rjust(4)}]"
             continue
 
-        tags_for_pdf[notam_id] = f"[UNKN | {age_str.rjust(4)}]"
-        unknown_notams_to_log[notam_id] = icao_code
+        tags_for_pdf[(notam_id, icao_code)] = f"[UNKN | {age_str.rjust(4)}]"
+        unknown_notams_to_log[(notam_id, icao_code)] = icao_code
 
     if unknown_notams_to_log:
         log_unknown_notams(unknown_notams_to_log)
@@ -588,15 +596,21 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
 
 
 # --- CORE LOGIC: FILTER & REBUILD ---
-def process_and_filter_briefing(extracted_text, blacklist_dict, processed_tags):
+def process_and_filter_briefing(extracted_text, blacklist_dict, processed_tags, fp_set):
     lines = extracted_text.split('\n')
     output_lines = []
     filtered_this_flight = []
     is_omitted = False
     flight_info = "LIDO BRIEFING"
+    current_loc = "UNK"
 
     for line in lines:
         clean_line = line.strip()
+
+        # Track active FIR/Airport context based on LIDO Headers
+        loc_match = re.search(r'\b([A-Z]{4})\s*/\s*[A-Z]{3,4}\b', line)
+        if loc_match and loc_match.group(1) not in fp_set:
+            current_loc = loc_match.group(1)
 
         # --- LIDO PAGINATION SHREDDER ---
         # Destroys repeating header lines like "BR 024/12 FEB/TPE-SEA" but saves the first one found
@@ -612,22 +626,38 @@ def process_and_filter_briefing(extracted_text, blacklist_dict, processed_tags):
         if match:
             notam_id = match.group(1)
 
-            if notam_id in blacklist_dict:
+            is_blacklisted = False
+            item_tuple = None
+
+            # Check using the composite key mapping specific FIRs
+            if (notam_id, current_loc) in blacklist_dict:
+                is_blacklisted = True
+                item_tuple = blacklist_dict[(notam_id, current_loc)]
+            elif (notam_id, "UNK") in blacklist_dict:
+                is_blacklisted = True
+                item_tuple = blacklist_dict[(notam_id, "UNK")]
+
+            if is_blacklisted:
                 is_omitted = True
-                item_tuple = blacklist_dict[notam_id]
                 if item_tuple not in filtered_this_flight:
                     filtered_this_flight.append(item_tuple)
                 continue
             else:
                 is_omitted = False
-                if notam_id in processed_tags:
-                    tag = processed_tags[notam_id]
-                    # Adjusted padding to 68 to nudge the tags 2 chars to the left
-                    base_line = line.rstrip()
-                    if len(base_line) < 68:
-                        line = f"{base_line.ljust(68)} {tag}"
-                    else:
-                        line = f"{base_line} {tag}"
+
+                # Fetch tag using composite key
+                tag = "[UNKN |      ]"
+                if (notam_id, current_loc) in processed_tags:
+                    tag = processed_tags[(notam_id, current_loc)]
+                elif (notam_id, "UNK") in processed_tags:
+                    tag = processed_tags[(notam_id, "UNK")]
+
+                # Adjusted padding to 68 to nudge the tags 2 chars to the left
+                base_line = line.rstrip()
+                if len(base_line) < 68:
+                    line = f"{base_line.ljust(68)} {tag}"
+                else:
+                    line = f"{base_line} {tag}"
                 output_lines.append(line)
                 continue
 
@@ -796,7 +826,7 @@ if uploaded_file:
 
                     with st.spinner("✂️ Cropping blacklist and reflowing text..."):
                         processed_text, flight_info_str = process_and_filter_briefing(full_text, blacklist,
-                                                                                      tags_for_pdf)
+                                                                                      tags_for_pdf, false_positives_db)
                         final_pdf_bytes = create_monospaced_pdf(processed_text, flight_info_str)
 
                     status_ui.update(label="✅ FAA Fetch & Tagging Complete!", state="complete", expanded=False)
