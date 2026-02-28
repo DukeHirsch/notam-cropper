@@ -218,7 +218,7 @@ def get_age_data(valid_from_str):
 
 
 def normalize_notam_id(raw_id):
-    """Universal Hash: Strips LIDO prefixes and FAA leading zeros to ensure perfect matches."""
+    """Universal Hash: Strips LIDO prefixes and FAA leading zeros to ensure perfect matches. Used ONLY for FAA API."""
     raw_id = str(raw_id).strip().upper()
     # Strip LIDO leading digit (e.g., 1A1234/25 -> A1234/25)
     raw_id = re.sub(r'^\d+([A-Z])', r'\1', raw_id)
@@ -447,7 +447,7 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
         is_company = "COMPANY" in last_boundary or notam_id.startswith("CO")
         is_u_type = notam_id.startswith("U")
 
-        if (notam_id, icao_code) in blacklist_dict or (notam_id, "UNK") in blacklist_dict or is_company or is_u_type:
+        if (notam_id, icao_code) in blacklist_dict or (notam_id, "UNK") in blacklist_dict:
             continue
         if (notam_id, icao_code) in known_dict or (notam_id, icao_code) in unknown_cache:
             continue
@@ -486,10 +486,18 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
         is_u_type = notam_id.startswith("U")
         is_fir_or_enroute = match.start() >= cutoff_idx
 
-        # COMPANY OR FIR ZONE NOTAMS: Only tag if < 8 days old, else leave blank
+        # EXTRACT BODY FOR FALLBACK CHECKS
+        body_start = match.end()
+        next_match = re.search(r'^\s*[A-Z0-9]{2,8}/[0-9]{2}\s+VALID:', full_text[body_start:], re.MULTILINE)
+        body_end = body_start + next_match.start() if next_match else len(full_text)
+        raw_notam_text = full_text[body_start:body_end].upper()
+
+        # COMPANY OR FIR ZONE NOTAMS: Tag [NEW THIS WEEK] if < 8 days old, else blank
         if is_company or is_u_type or is_fir_or_enroute:
             if age_int < 8:
                 tags_for_pdf[(notam_id, icao_code)] = "[NEW THIS WEEK]"
+            else:
+                tags_for_pdf[(notam_id, icao_code)] = ""
             continue
 
         # --- REGULAR AIRPORT NOTAMS (Constant 13-character locked width formatting) ---
@@ -499,7 +507,7 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             continue
 
         if (notam_id, icao_code) in unknown_cache:
-            tags_for_pdf[(notam_id, icao_code)] = f"[UNKN | {age_str.rjust(4)}]"
+            tags_for_pdf[(notam_id, icao_code)] = f"[age: {age_str.rjust(3)}]"
             continue
 
         # PASS 4: The FAA Engine using universal hash & Dynamic Fingerprint Fallback
@@ -513,12 +521,7 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             match_found = True
         else:
             # 4B. Dynamic Text Fingerprint Match (Middle & Tail)
-            body_start = match.end()
-            next_match = re.search(r'^\s*[A-Z0-9]{2,8}/[0-9]{2}\s+VALID:', full_text[body_start:], re.MULTILINE)
-            body_end = body_start + next_match.start() if next_match else len(full_text)
-            raw_pdf_body = full_text[body_start:body_end]
-
-            pdf_clean = re.sub(r'[^A-Z0-9]', '', raw_pdf_body.upper())
+            pdf_clean = re.sub(r'[^A-Z0-9]', '', raw_notam_text)
             if pdf_clean.endswith("EST"): pdf_clean = pdf_clean[:-3]
             if pdf_clean.endswith("UFN"): pdf_clean = pdf_clean[:-3]
 
@@ -547,11 +550,6 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             continue
 
         # PASS 5: The Hybrid Fallback (LIDO Headers + Keyword Overrides)
-        body_start = match.end()
-        next_match = re.search(r'^\s*[A-Z0-9]{2,8}/[0-9]{2}\s+VALID:', full_text[body_start:], re.MULTILINE)
-        body_end = body_start + next_match.start() if next_match else len(full_text)
-        raw_notam_text = full_text[body_start:body_end].upper()
-
         fallback_tag = "UNKN"
 
         # 5A. Base Assignment from LIDO Header
@@ -586,7 +584,7 @@ def analyze_notams(full_text, blacklist_dict, known_dict, unknown_cache, fp_set,
             tags_for_pdf[(notam_id, icao_code)] = f"[{fallback_tag.ljust(4)} | {age_str.rjust(4)}]"
             continue
 
-        tags_for_pdf[(notam_id, icao_code)] = f"[UNKN | {age_str.rjust(4)}]"
+        tags_for_pdf[(notam_id, icao_code)] = f"[age: {age_str.rjust(3)}]"
         unknown_notams_to_log[(notam_id, icao_code)] = icao_code
 
     if unknown_notams_to_log:
@@ -629,7 +627,7 @@ def process_and_filter_briefing(extracted_text, blacklist_dict, processed_tags, 
             is_blacklisted = False
             item_tuple = None
 
-            # Check using the composite key mapping specific FIRs
+            # Check using the composite key mapping specific FIRs or UNK
             if (notam_id, current_loc) in blacklist_dict:
                 is_blacklisted = True
                 item_tuple = blacklist_dict[(notam_id, current_loc)]
@@ -646,18 +644,22 @@ def process_and_filter_briefing(extracted_text, blacklist_dict, processed_tags, 
                 is_omitted = False
 
                 # Fetch tag using composite key
-                tag = "[UNKN |      ]"
+                tag = ""
                 if (notam_id, current_loc) in processed_tags:
                     tag = processed_tags[(notam_id, current_loc)]
                 elif (notam_id, "UNK") in processed_tags:
                     tag = processed_tags[(notam_id, "UNK")]
 
-                # Adjusted padding to 68 to nudge the tags 2 chars to the left
                 base_line = line.rstrip()
-                if len(base_line) < 68:
-                    line = f"{base_line.ljust(68)} {tag}"
+                if tag == "":
+                    # Leave blank without padding for older Company/FIR NOTAMs
+                    line = base_line
                 else:
-                    line = f"{base_line} {tag}"
+                    # Adjusted padding to 68 to nudge the tags 2 chars to the left
+                    if len(base_line) < 68:
+                        line = f"{base_line.ljust(68)} {tag}"
+                    else:
+                        line = f"{base_line} {tag}"
                 output_lines.append(line)
                 continue
 

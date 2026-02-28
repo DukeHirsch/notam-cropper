@@ -18,16 +18,6 @@ from streamlit_gsheets import GSheetsConnection
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1hG8BDR9R1Wz4t9nU-lCy82sVIT8-oGfhyy7NT1mbbss/edit?gid=101773839#gid=101773839"
 
-# Add your custom ICAO to IATA mappings here. The script handles both directions automatically.
-AIRPORT_MAP = {
-    "RCSS": "TSA",
-    "RCTP": "TPE",
-    "LOWW": "VIE",
-    "RJTT": "HND",
-    "RJAA": "NRT"
-}
-IATA_TO_ICAO = {v: k for k, v in AIRPORT_MAP.items()}
-
 
 # --- CORE LOGIC ---
 def fetch_public_notam_type(notam_id, location_id):
@@ -150,16 +140,9 @@ def maintain_blacklist():
             original_id = item["id"]
             raw_loc = item["loc"].upper()
 
-            # A. Resolve Location Code
-            if raw_loc in IATA_TO_ICAO:
-                api_loc = IATA_TO_ICAO[raw_loc]
-                sheet_loc = raw_loc
-            elif raw_loc in AIRPORT_MAP:
-                api_loc = raw_loc
-                sheet_loc = AIRPORT_MAP[raw_loc]
-            else:
-                api_loc = raw_loc
-                sheet_loc = raw_loc
+            # A. Resolve Location Code (Strict ICAO)
+            api_loc = raw_loc
+            sheet_loc = raw_loc
 
             # B. Convert LIDO NOTAM ID to standard ICAO format (e.g., 1A1234/25 -> A1234/25)
             api_notam_id = re.sub(r'^\d+([A-Za-z])', r'\1', original_id)
